@@ -1,0 +1,171 @@
+#!/bin/bash
+
+# init-sh - A minimal init system for containers
+# 
+# Usage: init-sh [OPTIONS] -- COMMAND [ARGS...]
+#
+# Options:
+#   -p PATTERN    Processes to forward signals to (can be specified multiple times)
+#   -s SIGNAL     Signals to forward (default: TERM, can be specified multiple times)
+#   -v            Verbose mode
+#   -h            Show help
+#
+# Environment variables:
+#   INIT_SH_PROCESS_MATCH   Comma-separated list of process patterns to match
+#   INIT_SH_SIGNALS         Comma-separated list of signals to forward
+#   INIT_SH_VERBOSE         Enable verbose output (1 or 0)
+#
+# Examples:
+#   init-sh -p node -p python -- my-app
+#   INIT_SH_PROCESS_MATCH="node,python" init-sh -- my-app
+#
+
+set -e
+
+PROCESS_PATTERNS=()
+SIGNALS_TO_FORWARD=("TERM" "INT")
+VERBOSE=0
+CHILD_PID=""
+
+# CLI args
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--pattern)
+            PROCESS_PATTERNS+=("$2")
+            shift 2
+            ;;
+        -s|--signal)
+            SIGNALS_TO_FORWARD+=("$2")
+            shift 2
+            ;;
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -h|--help)
+            grep '^#' "$0" | grep -v '^#!/' | sed 's/^# *//'
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# ENV vars
+if [[ -n "${INIT_SH_PROCESS_MATCH}" ]]; then
+    IFS=',' read -ra ENV_PATTERNS <<< "${INIT_SH_PROCESS_MATCH}"
+    PROCESS_PATTERNS+=("${ENV_PATTERNS[@]}")
+fi
+
+if [[ -n "${INIT_SH_SIGNALS}" ]]; then
+    IFS=',' read -ra SIGNALS_TO_FORWARD <<< "${INIT_SH_SIGNALS}"
+fi
+
+if [[ "${INIT_SH_VERBOSE}" == "1" ]]; then
+    VERBOSE=1
+fi
+
+log() {
+    if [[ $VERBOSE -eq 1 ]]; then
+        echo "[init-sh] $*" >&2
+    fi
+}
+
+log_always() {
+    echo "[init-sh] $*" >&2
+}
+
+forward_signal() {
+    local signal=$1
+    log "Forwarding signal $signal"
+    
+    if [[ -n "$CHILD_PID" ]] && kill -0 "$CHILD_PID" 2>/dev/null; then
+        log "Sending $signal to main child process (PID: $CHILD_PID)"
+        kill -"$signal" "$CHILD_PID" 2>/dev/null || true
+    fi
+    
+    if [[ ${#PROCESS_PATTERNS[@]} -gt 0 ]]; then
+        for pid_dir in /proc/[0-9]*; do
+            pid=$(basename "$pid_dir")
+            
+            if [[ "$pid" -eq "$$" ]]; then
+                continue
+            fi
+            
+            if [[ "$pid" -eq "$CHILD_PID" ]]; then
+                continue
+            fi
+            
+            if [[ -f "$pid_dir/cmdline" ]]; then
+                cmdline=$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null || true)
+                
+                for pattern in "${PROCESS_PATTERNS[@]}"; do
+                    if [[ "$cmdline" == *"$pattern"* ]]; then
+                        log "Found matching process '$pattern' with PID: $pid. Sending $signal"
+                        kill -"$signal" "$pid" 2>/dev/null || true
+                        break
+                    fi
+                done
+            fi
+        done
+    fi
+}
+
+reap_zombies() {
+    local pid
+    local status
+    
+    while true; do
+        pid=$(wait -n -p 2>/dev/null) || break
+        status=$?
+        if [[ -n "$pid" ]]; then
+            log "Reaped zombie process with PID: $pid (exit status: $status)"
+        fi
+    done
+}
+
+setup_signal_handlers() {
+    for sig in "${SIGNALS_TO_FORWARD[@]}"; do
+        trap "forward_signal $sig" "$sig"
+        log "Set up handler for signal: $sig"
+    done
+    
+    trap reap_zombies SIGCHLD
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        log_always "Error: No command specified"
+        log_always "Usage: $0 [OPTIONS] -- COMMAND [ARGS...]"
+        exit 1
+    fi
+    
+    log "Starting init-sh with PID $$"
+    log "Process patterns: ${PROCESS_PATTERNS[*]:-none}"
+    log "Signals to forward: ${SIGNALS_TO_FORWARD[*]}"
+    
+    setup_signal_handlers
+    
+    log "Starting command: $*"
+    "$@" &
+    CHILD_PID=$!
+    log "Main child process started with PID: $CHILD_PID"
+    
+    wait "$CHILD_PID"
+    EXIT_CODE=$?
+    
+    log "Main child process exited with code: $EXIT_CODE"
+    
+    sleep 0.1
+    
+    reap_zombies
+    
+    exit "$EXIT_CODE"
+}
+
+main "$@"

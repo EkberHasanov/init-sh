@@ -1,0 +1,45 @@
+name: Test init-sh
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Make init-sh executable
+      run: chmod +x init-sh
+    
+    - name: Run tests
+      run: ./test.sh
+    
+    - name: Test help
+      run: ./init-sh -h
+    
+    - name: Test basic execution
+      run: ./init-sh -- echo "Hello from GitHub Actions"
+    
+    - name: Test verbose mode
+      run: ./init-sh -v -- true
+    
+    - name: Test exit code propagation
+      run: |
+        ./init-sh -- true
+        ! ./init-sh -- false
+    
+    - name: Test with Docker
+      run: |
+        docker build -f examples/node/Dockerfile -t init-sh-test .
+        docker run --rm init-sh-test echo "Docker test passed"
+    
+    - name: Shellcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+        shellcheck init-sh || true
