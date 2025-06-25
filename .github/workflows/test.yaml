@@ -2,9 +2,9 @@ name: Test init-sh
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
 
 jobs:
   test:
@@ -35,7 +35,8 @@ jobs:
     
     - name: Test with Docker
       run: |
-        docker build -f examples/node/Dockerfile -t init-sh-test .
+        cd examples/node/
+        docker build -f Dockerfile -t init-sh-test .
         docker run --rm init-sh-test echo "Docker test passed"
     
     - name: Shellcheck
